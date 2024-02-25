@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<title>A small introduction to three.js webgl [1]</title>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+	<link rel="stylesheet" href="css/basic.css">
+</head>
+
+<body>
+	<div id="info"><a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> Q1: a rotating WebGL cube
+	</div>
+	<canvas id="webglcanvas" style="border: none;background-color:#000000" width="800" height="600"></canvas>
+
+
+
+
+	<script type="importmap">
+      {
+	  "imports": {
+	      "three": "./three.module.js",
+	      "three/addons/controls/": "./examples/jsm/controls/"
+	  }
+      }
+    </script>
+
+	<script id="post-vert" type="x-shader/x-vertex">
+		// Vertex shader
+		uniform float moment; // (général) temps écoulé depuis le début
+		uniform float scale;  // (général) paramètre donnant le gonflement périodique
+		varying vec3 fn;          // (sortie) normale au sommet (repère écran)
+		varying vec3 vertPos;     // (sortie) coordonnées 3D du sommet (repère écran)
+		varying vec3 gblPos;      // (sortie) coordonnées 3D du sommet (repère général)
+		void main() {
+		float t = mod( moment, 6.28318530717958647688 );
+		// On gonfle légèrement le soleil périodiquement en fonction du temps.
+		vec3 scaled_pos = position + scale * (1.0+cos( 2.0*t)) * normal;
+		gblPos          = scaled_pos;
+		// On calcule le vecteur normal au sommet dans le repère écran      
+		fn              = vec3( normalMatrix * normal );
+		// On calcule la position du sommet dans le repère caméra
+		vec4 vertPos4   = modelViewMatrix * vec4( scaled_pos, 1.0 );
+		// On envoie au fragment shader la position du sommet dans
+		// le repère camera.
+		vertPos         = vec3(vertPos4) / vertPos4.w;
+		// On indique à OpenGL la position du sommet dans le repère écran/pixel
+		gl_Position     = projectionMatrix * vertPos4;
+		}
+	  </script>
+
+	<script id="post-frag" type="x-shader/x-fragment">
+		// Fragment/pixel shader
+	  varying vec3 fn;      // (entrée) normale du pixel (repère écran) (interpolée)
+	  varying vec3 vertPos; // (entrée) coordonnées 3D du pixel (repère écran)(interpolées)
+	  varying vec3 gblPos;  // (entrée) coordonnées 3D du pixel (repère général)(interpolées)
+		uniform float moment; // (général) temps écoulé depuis le début
+		varying vec4 outColor; // (sortie) la couleur de sortie du pixel
+		
+		void main() {
+		float t = mod( moment, 6.28318530717958647688 ); // temps
+		vec3 n1 = normalize(fn); // vecteur normal au soleil (repère écran)
+		float l = abs( n1.z );   // proche de 0 sur les bords du soleil
+		gl_FragColor.rgb = vec3( 1.0 , 0.6+0.4* cos( 4.*gblPos.x + 3.*t ), l );
+		gl_FragColor.a   = 1.0;
+		}
+	  </script>
+
+	<script type="module">
+		import * as THREE from 'three';
+		import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+		var renderer = null;
+		var scene = null;
+		var camera = null;
+		var cube = null;
+		var earth = null;
+		var sun = null;
+		var moon = null;
+		var mercury = null;
+		var venus = null;
+		var mars = null;
+		var jupiter = null;
+
+		var curTime = Date.now();
+		var mercury_group = new THREE.Group();
+		var venus_group = new THREE.Group();
+		var mars_group = new THREE.Group();
+		var jupiter_group = new THREE.Group();
+		var solar_Systeme = new THREE.Group();
+		var earth_group = new THREE.Group();
+		var moon_group = new THREE.Group();
+		var sun_Group = new THREE.Group();
+		var sun_mars_groupe = new THREE.Group();
+
+		var light = null;
+		var canvas = document.getElementById("webglcanvas");
+		var cameraAngle = null;
+		var controls = null;
+		var shader;
+		var uniforms;
+		var init_camera_x = -Math.PI / 5;
+		var init_camera_y = 0;
+		var init_camera_z = -10;
+		var pause = false;
+		var lastFrameTime = null;
+
+		var scale_for_planet = 100;//for better visibility of the planets
+		var sun_size = 10;
+		var earth_size_by_sun = 1 / 109
+		var earth_size = 1 * earth_size_by_sun * scale_for_planet;
+		var moon_size = earth_size / 4;
+		var earth_sun_distance = 50;
+		var mercury_sun_distance = earth_sun_distance * 0.39;
+		var venus_sun_distance = earth_sun_distance * 0.72;
+		var mars_sun_distance = earth_sun_distance * 1.52;
+		var jupiter_sun_distance = earth_sun_distance * 5.20;
+
+		var mercury_size = 0.383 * earth_size_by_sun * scale_for_planet;
+		var venus_size = 0.949 * earth_size_by_sun * scale_for_planet;
+		var mars_size = 0.532 * earth_size_by_sun * scale_for_planet;
+		var jupiter_size = 11.21 * earth_size_by_sun * scale_for_planet;
+		// var saturn_size = 9.45 * earth_size_by_sun * scale_for_planet;
+		// var uranus_size = 4.01 * earth_size_by_sun * scale_for_planet;
+		// var neptune_size = 3.88 * earth_size_by_sun * scale_for_planet;
+		// var pluto_size = 0.186 * earth_size_by_sun * scale_for_planet;
+
+
+		/*    Mercury: 0.383
+			Venus: 0.949
+			Earth: 1.0
+			Mars: 0.532
+			Jupiter: 11.21
+			Saturn: 9.45
+			Uranus: 4.01
+			Neptune: 3.88
+			Pluto: 0.186 (optional, since it's no longer considered a planet)*/
+		// Checks that your browser supports WebGL. 
+		if (!(window.WebGLRenderingContext
+			&& (canvas.getContext('webgl')
+				|| canvas.getContext('experimental-webgl'))))
+			console.log("WebGL not supported on your browser.");
+
+		init();
+		run();
+
+		// This function is called whenever the document is loaded
+		function init() {
+
+
+			uniforms = {
+				moment: { type: "f", value: 0.0 },
+				scale: { type: "f", value: 0.02 }
+			};
+			shader = new THREE.ShaderMaterial({
+				vertexShader: document.querySelector('#post-vert').textContent.trim(),
+				fragmentShader: document.querySelector('#post-frag').textContent.trim(),
+				uniforms: uniforms
+			});
+			//shader.glslVersion = THREE.GLSL3;
+
+
+			// Create the Three.js renderer and attach it to our canvas
+			renderer = new THREE.WebGLRenderer({
+				canvas: canvas,
+				antialias: true,
+			});
+			// Set the viewport size
+			renderer.setSize(window.innerWidth, window.innerHeight);
+			// Create a new Three.js scene
+			scene = new THREE.Scene();
+			// Add  a camera so we can view the scene
+			camera = new THREE.PerspectiveCamera(45, canvas.width / canvas.height,
+				1, 4000);
+			// camera.position.x = 5 * Math.cos(cameraAngle);
+			// camera.position.y = 3 * Math.sin(cameraAngle);
+			camera.position.set(init_camera_x, init_camera_y, init_camera_z);
+			scene.add(camera);
+
+
+
+			//background
+			var path = "images/MilkyWay/";
+			var format = '.jpg';
+			var urls = [
+				path + 'posx' + format, path + 'negx' + format,
+				path + 'posy' + format, path + 'negy' + format,
+				path + 'posz' + format, path + 'negz' + format
+			];
+
+			var textureCube = new THREE.CubeTextureLoader().load(urls);
+			textureCube.type = THREE.UnsignedByteType;
+			textureCube.format = THREE.RGBAFormat;
+			scene.background = textureCube;
+
+
+
+			//link to textures
+			var mapUrl_sun = "images/sun.jpg";
+			var mapUrl_earth = "images/earth_atmos_2048.jpg";
+			var mapUrl_moon = "images/moon.jpg";
+			var mapUrl_mercury = "images/mercury.jpg";
+			var mapUrl_venus = "images/venus.jpg";
+			var mapUrl_mars = "images/mars.jpg";
+			var mapUrl_jupiter = "images/jupiter.jpg";
+
+			// Load textures
+			var sun_map = new THREE.TextureLoader().load(mapUrl_sun);
+			var earth_map = new THREE.TextureLoader().load(mapUrl_earth);
+			var moon_map = new THREE.TextureLoader().load(mapUrl_moon);
+			var mercury_map = new THREE.TextureLoader().load(mapUrl_mercury);
+			var venus_map = new THREE.TextureLoader().load(mapUrl_venus);
+			var mars_map = new THREE.TextureLoader().load(mapUrl_mars);
+			var jupiter_map = new THREE.TextureLoader().load(mapUrl_jupiter);
+
+			// material
+			var sun_material = new THREE.MeshBasicMaterial({ map: sun_map });
+			var earth_material = new THREE.MeshPhongMaterial({ map: earth_map });
+			var moon_material = new THREE.MeshPhongMaterial({ map: moon_map });
+			var mercury_material = new THREE.MeshPhongMaterial({ map: mercury_map });
+			var venus_material = new THREE.MeshPhongMaterial({ map: venus_map });
+			var mars_material = new THREE.MeshPhongMaterial({ map: mars_map });
+			var jupiter_material = new THREE.MeshPhongMaterial({ map: jupiter_map });
+
+			earth_material.specular = new THREE.Color(0xffffff);
+
+			// Geometry
+			var sun_geometry = new THREE.SphereGeometry(sun_size, 32, 32);
+			var earth_geometry = new THREE.SphereGeometry(earth_size, 32, 32);
+			var moon_geometry = new THREE.SphereGeometry(moon_size, 32, 32);
+			var mercury_geometry = new THREE.SphereGeometry(mercury_size, 32, 32);
+			var venus_geometry = new THREE.SphereGeometry(venus_size, 32, 32);
+			var mars_geometry = new THREE.SphereGeometry(mars_size, 32, 32);
+			var jupiter_geometry = new THREE.SphereGeometry(jupiter_size, 32, 32);
+
+			// Mesh
+			sun = new THREE.Mesh(sun_geometry, sun_material);
+			earth = new THREE.Mesh(earth_geometry, earth_material);
+			moon = new THREE.Mesh(moon_geometry, moon_material);
+			mercury = new THREE.Mesh(mercury_geometry, mercury_material);
+			venus = new THREE.Mesh(venus_geometry, venus_material);
+			mars = new THREE.Mesh(mars_geometry, mars_material);
+			jupiter = new THREE.Mesh(jupiter_geometry, jupiter_material);
+
+			//position
+			solar_Systeme.position.z = -40;
+			earth_group.position.x = earth_sun_distance;
+			mercury_group.position.x = mercury_sun_distance;
+			venus_group.position.x = venus_sun_distance;
+			moon_group.position.x = 5;
+			mars_group.position.x = mars_sun_distance;
+			jupiter_group.position.x = jupiter_sun_distance;
+			//Add Light
+			// Add a white point light, which lights at infinite distance and without decay
+			// with the distance.
+			light = new THREE.PointLight(0xffffff, 2.5, 0.0, 0.0);
+
+			mercury_group.add(mercury);
+			venus_group.add(venus);
+			mars_group.add(mars);
+			jupiter_group.add(jupiter);
+
+			moon_group.add(moon);
+			earth_group.add(earth);
+			earth_group.add(moon_group);
+
+			sun_Group.add(sun);
+			sun_Group.add(light);
+
+
+
+			solar_Systeme.add(mercury_group);
+			solar_Systeme.add(venus_group);
+			solar_Systeme.add(mars_group);
+			solar_Systeme.add(jupiter_group);
+			sun_mars_groupe.add(mars_group);
+			sun_mars_groupe.add(sun_Group);
+
+			scene.add(sun_mars_groupe);
+			console.log(sun_mars_groupe);
+			solar_Systeme.add(sun_Group);
+			solar_Systeme.add(earth_group);
+			scene.add(solar_Systeme);
+
+
+			// On réutilise la géométrie de sphère de rayon 1.
+			var sunHalo = new THREE.Mesh(sun_geometry, shader);
+			sunHalo.castShadow = false;
+			sunHalo.receiveShadow = false;
+			//sun_Group.add(sunHalo);
+
+
+			//shadow
+			renderer.shadowMap.enabled = true;
+			// rendu coûteux mais plus joli (default: THREE.PCFShadowMap)
+			renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+
+			light.castShadow = true;
+			// On peut aussi paramétrer la qualité du calcul
+			light.shadow.mapSize.width = 512; // default
+			light.shadow.mapSize.height = 512; // default
+			light.shadow.camera.near = 0.5; // default
+			light.shadow.camera.far = 50;
+
+
+			sun.castShadow = false;
+			sun.receiveShadow = false;
+			earth.castShadow = true;
+			earth.receiveShadow = true;
+			moon.castShadow = true;
+			moon.receiveShadow = true;
+			mercury.castShadow = true;
+			mercury.receiveShadow = true;
+			venus.castShadow = true;
+			venus.receiveShadow = true;
+			mars.castShadow = true;
+			mars.receiveShadow = true;
+			jupiter.castShadow = true;
+			jupiter.receiveShadow = true;
+
+
+
+			//camera
+			controls = new OrbitControls(camera, renderer.domElement);
+			// controls.addEventListener( 'change', render ); // call this only in static scenes (i.e., if there is no animation loop)
+			controls.enableDamping = true; // an animation loop is required when either damping or auto-rotation are enabled
+			controls.dampingFactor = 0.25;
+			controls.screenSpacePanning = false;
+			controls.minDistance = -100;
+			controls.maxDistance = 100;
+			controls.maxPolarAngle = Math.PI / 2;
+
+			// Add an event listener to be called whenever the window resizes.
+			window.addEventListener('keydown', function () {
+				if (event.keyCode == 32) {
+					pause = !pause;
+					lastFrameTime = Date.now();
+				}
+
+			}, false);
+
+		}
+
+		// This function is called regularly to update the canvas webgl.
+		function run() {
+			// Ask to call again run 
+			requestAnimationFrame(run);
+
+			// Render the scene
+			render();
+
+			// Calls the animate function if objects or camera should move
+			animate();
+		}
+
+		// This function is called regularly to take care of the rendering.
+		function render() {
+			// Render the scene
+			renderer.render(scene, camera);
+		}
+
+		// This function is called regularly to update objects.
+		function animate() {
+			if (!pause) {
+
+
+				// Computes how time has changed since last display
+				var now = Date.now();
+				var deltaTime = now - curTime;
+				curTime = now;
+				var fracTime = deltaTime / 1000; // in seconds
+				lastFrameTime = now;
+				var speed = 10;
+				// Now we can move	 objects, camera, etc.
+				// Example: rotation cube
+				//var angle = 0.1 * Math.PI * 2 * fracTime; // one turn per 10 second.
+				//cube.rotation.y += angle;
+				var angle = fracTime * Math.PI * 2;
+				angle *= 1 * speed;
+				earth.rotation.x = Math.PI / 5;
+				sun.rotation.y += angle / 27; // le soleil tourne en 27 jours
+				// Notez que l'axe y est l'axe "vertical" usuellement.
+				solar_Systeme.rotation.y += angle / 365; // la terre tourne en 365 jours
+				earth.rotation.y += angle; // et en un jour sur elle-même
+				earth_group.rotation.y += angle / 28; // la lune tourne en 28 jours autour de la terre
+				moon.rotation.y += angle / 28; // et en 28 jours aussi sur elle-même pour faire face à la terre
+				mercury.rotation.y += angle / 58; // mercure tourne en 58 jours
+				venus.rotation.y += angle / 243; // venus tourne en 243 jours
+				mars.rotation.y += angle / 1.03; // mars tourne en 1.03 jours
+				jupiter.rotation.y += angle / 0.41; // jupiter tourne en 0.41 jours
+				venus_group.rotation.y += angle / 243; // venus tourne en 243 jours
+				mars_group.rotation.y += angle / 1.03; // mars tourne en 1.03 jours
+				jupiter_group.rotation.y += angle / 0.41; // jupiter tourne en 0.41 jours
+				controls.update();
+				// On change le `moment` pour le shader.
+				shader.uniforms.moment.value += fracTime;
+			}
+
+		}
+
+	</script>
+
+</body>
+
+</html>
